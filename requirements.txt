@@ -1,0 +1,8 @@
+streamlit
+pandas
+altair
+python-dotenv
+openai
+resend
+reportlab
+psycopg[binary]
