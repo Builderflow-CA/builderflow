@@ -3180,7 +3180,10 @@ if current_page == "Proposal Draft":
                 mark_proposal_generated(lead_id)
                 add_proposal_version(lead_id, client_name, project_type, result)
                 created, message = create_proposal_followup_tasks(lead_id)
-                st.success(message) if created else st.info(message)
+                if created:
+                    st.success(message)
+                else:
+                     st.info(message)
             st.session_state["last_proposal"] = {"client_name": client_name, "project_type": project_type, "content": result}
     if st.session_state.get("last_proposal"):
         proposal = st.session_state["last_proposal"]
@@ -3241,12 +3244,18 @@ if current_page == "Automations":
                 with a1:
                     if st.button("Generate / Refresh Email", key=f"gen_task_{task['id']}"):
                         ok, msg = generate_task_email_content(int(task["id"]))
-                        st.success(msg) if ok else st.error(msg)
+                        if ok:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
                         st.rerun()
                 with a2:
                     if st.button("Send This Email", key=f"send_task_{task['id']}"):
                         ok, msg = send_task_email(int(task["id"]))
-                        st.success(msg) if ok else st.error(msg)
+                        if ok:
+                             st.success(msg)
+                        else:
+                             st.error(msg)
                         st.rerun()
                 with a3:
                     if st.button("Skip This Step", key=f"skip_task_{task['id']}"):
