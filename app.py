@@ -3146,7 +3146,10 @@ if current_page == "Lead Follow-Up":
         st.text_area("Generated Follow-Up", result["body"], height=320)
         if result.get("client_email") and st.button("Send This Follow-Up Email Now"):
             ok, message = send_email_via_resend(result["client_email"], result["subject"], result["body"], profile)
-            st.success("Email sent.") if ok else st.error(f"Email send failed: {message}")
+            if ok:
+                    st.success("Email sent.")
+            else:
+                    st.error(f"Email send failed: {message}")
 
 
 # ============================================================
@@ -3532,7 +3535,10 @@ if current_page == "Client Update":
         st.text_area("Generated Client Update", result["body"], height=350)
         if result.get("email") and st.button("Send This Client Update Email Now"):
             ok, message = send_email_via_resend(result["email"], result["subject"], result["body"], profile)
-            st.success("Email sent.") if ok else st.error(f"Email send failed: {message}")
+        if ok:
+                st.success("Email sent.")
+        else:
+                st.error(f"Email send failed: {message}")
 
 
 # ============================================================
@@ -3566,7 +3572,10 @@ if current_page == "Referral / Review":
         st.text_area("Generated Review / Referral", result["body"], height=400)
         if result.get("email") and st.button("Send This Review / Referral Email Now"):
             ok, message = send_email_via_resend(result["email"], result["subject"], result["body"], profile)
-            st.success("Email sent.") if ok else st.error(f"Email send failed: {message}")
+        if ok:
+                st.success("Email sent.")
+        else:
+                st.error(f"Email send failed: {message}")
 
 
 # ============================================================
