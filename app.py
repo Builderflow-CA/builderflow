@@ -1697,6 +1697,55 @@ def has_openai_key() -> bool:
     return bool(read_secret_or_env("OPENAI_API_KEY", "")) and OpenAI is not None
 
 
+def clean_ai_output(text: str) -> str:
+    """Clean AI text so customer-facing emails/proposals do not show Markdown symbols."""
+    if not text:
+        return ""
+
+    cleaned = str(text)
+
+    replacements = {
+        "**": "",
+        "###": "",
+        "##": "",
+        "#": "",
+        "__": "",
+        "`": "",
+    }
+
+    for old, new in replacements.items():
+        cleaned = cleaned.replace(old, new)
+
+    cleaned = cleaned.replace("•", "-")
+    cleaned = cleaned.replace("–", "-")
+    cleaned = cleaned.replace("—", "-")
+
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+    compact_lines = []
+    previous_blank = False
+
+    for line in lines:
+        is_blank = line.strip() == ""
+        if is_blank and previous_blank:
+            continue
+        compact_lines.append(line)
+        previous_blank = is_blank
+
+    return "\n".join(compact_lines).strip()
+
+
+def plain_text_ai_rule() -> str:
+    return """
+Formatting rules:
+- Write in plain text only.
+- Do not use Markdown formatting.
+- Do not use ## headings.
+- Do not use **bold** symbols.
+- Do not use backticks.
+- Use simple dashes for bullets when needed.
+- Keep customer-facing messages clean and easy to copy into email.
+"""
+
 def ai_generate(prompt: str, fallback_text: str) -> str:
     cleaned_fallback = clean_ai_output(fallback_text)
 
@@ -3656,52 +3705,4 @@ if current_page == "Saved Outputs":
         clear_outputs()
         st.success("Saved outputs cleared.")
         st.rerun()
-def clean_ai_output(text: str) -> str:
-    """Clean AI text so customer-facing emails/proposals do not show Markdown symbols."""
-    if not text:
-        return ""
-
-    cleaned = str(text)
-
-    replacements = {
-        "**": "",
-        "###": "",
-        "##": "",
-        "#": "",
-        "__": "",
-        "`": "",
-    }
-
-    for old, new in replacements.items():
-        cleaned = cleaned.replace(old, new)
-
-    cleaned = cleaned.replace("•", "-")
-    cleaned = cleaned.replace("–", "-")
-    cleaned = cleaned.replace("—", "-")
-
-    lines = [line.rstrip() for line in cleaned.splitlines()]
-    compact_lines = []
-    previous_blank = False
-
-    for line in lines:
-        is_blank = line.strip() == ""
-        if is_blank and previous_blank:
-            continue
-        compact_lines.append(line)
-        previous_blank = is_blank
-
-    return "\n".join(compact_lines).strip()
-
-
-def plain_text_ai_rule() -> str:
-    return """
-Formatting rules:
-- Write in plain text only.
-- Do not use Markdown formatting.
-- Do not use ## headings.
-- Do not use **bold** symbols.
-- Do not use backticks.
-- Use simple dashes for bullets when needed.
-- Keep customer-facing messages clean and easy to copy into email.
-"""
 
