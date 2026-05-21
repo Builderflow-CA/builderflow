@@ -1698,14 +1698,25 @@ def has_openai_key() -> bool:
 
 
 def ai_generate(prompt: str, fallback_text: str) -> str:
+    cleaned_fallback = clean_ai_output(fallback_text)
+
     if not has_openai_key():
-        return fallback_text
+        return cleaned_fallback
+
     try:
         client = OpenAI(api_key=read_secret_or_env("OPENAI_API_KEY", ""))
-        response = client.responses.create(model=read_secret_or_env("OPENAI_MODEL", "gpt-5.2"), input=prompt)
-        return response.output_text
+        final_prompt = prompt + "\n\n" + plain_text_ai_rule()
+
+        with st.spinner("🔨 Building this with BuilderFlow..."):
+            response = client.responses.create(
+                model=read_secret_or_env("OPENAI_MODEL", "gpt-5.2"),
+                input=final_prompt,
+            )
+
+        return clean_ai_output(response.output_text)
+
     except Exception as error:
-        return fallback_text + "\n\n---\n" + f"AI error fallback used. Error: {str(error)}"
+        return cleaned_fallback + "\n\n---\n" + f"AI error fallback used. Error: {str(error)}"
 
 
 def has_resend_key() -> bool:
@@ -3147,9 +3158,9 @@ if current_page == "Lead Follow-Up":
         if result.get("client_email") and st.button("Send This Follow-Up Email Now"):
             ok, message = send_email_via_resend(result["client_email"], result["subject"], result["body"], profile)
             if ok:
-                    st.success("Email sent.")
+                st.success("Email sent.")
             else:
-                    st.error(f"Email send failed: {message}")
+                st.error(f"Email send failed: {message}")
 
 
 # ============================================================
@@ -3186,7 +3197,7 @@ if current_page == "Proposal Draft":
                 if created:
                     st.success(message)
                 else:
-                     st.info(message)
+                    st.info(message)
             st.session_state["last_proposal"] = {"client_name": client_name, "project_type": project_type, "content": result}
     if st.session_state.get("last_proposal"):
         proposal = st.session_state["last_proposal"]
@@ -3256,9 +3267,9 @@ if current_page == "Automations":
                     if st.button("Send This Email", key=f"send_task_{task['id']}"):
                         ok, msg = send_task_email(int(task["id"]))
                         if ok:
-                             st.success(msg)
+                            st.success(msg)
                         else:
-                             st.error(msg)
+                            st.error(msg)
                         st.rerun()
                 with a3:
                     if st.button("Skip This Step", key=f"skip_task_{task['id']}"):
@@ -3645,3 +3656,52 @@ if current_page == "Saved Outputs":
         clear_outputs()
         st.success("Saved outputs cleared.")
         st.rerun()
+def clean_ai_output(text: str) -> str:
+    """Clean AI text so customer-facing emails/proposals do not show Markdown symbols."""
+    if not text:
+        return ""
+
+    cleaned = str(text)
+
+    replacements = {
+        "**": "",
+        "###": "",
+        "##": "",
+        "#": "",
+        "__": "",
+        "`": "",
+    }
+
+    for old, new in replacements.items():
+        cleaned = cleaned.replace(old, new)
+
+    cleaned = cleaned.replace("•", "-")
+    cleaned = cleaned.replace("–", "-")
+    cleaned = cleaned.replace("—", "-")
+
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+    compact_lines = []
+    previous_blank = False
+
+    for line in lines:
+        is_blank = line.strip() == ""
+        if is_blank and previous_blank:
+            continue
+        compact_lines.append(line)
+        previous_blank = is_blank
+
+    return "\n".join(compact_lines).strip()
+
+
+def plain_text_ai_rule() -> str:
+    return """
+Formatting rules:
+- Write in plain text only.
+- Do not use Markdown formatting.
+- Do not use ## headings.
+- Do not use **bold** symbols.
+- Do not use backticks.
+- Use simple dashes for bullets when needed.
+- Keep customer-facing messages clean and easy to copy into email.
+"""
+
