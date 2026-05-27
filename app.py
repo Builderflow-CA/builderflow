@@ -166,25 +166,48 @@ def db_connection():
             connection.close()
 
 
-def fetch_one(query: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_fetch_one(storage_key: str, query: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
     with db_connection() as con:
         if USE_POSTGRES:
-            row = con.execute(postgres_query(query), tuple(params)).fetchone()
+            row = con.execute(postgres_query(query), params).fetchone()
         else:
-            row = con.execute(query, tuple(params)).fetchone()
+            row = con.execute(query, params).fetchone()
         return dict(row) if row else None
 
 
-def fetch_all(query: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_fetch_all(storage_key: str, query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
     with db_connection() as con:
         if USE_POSTGRES:
-            rows = con.execute(postgres_query(query), tuple(params)).fetchall()
+            rows = con.execute(postgres_query(query), params).fetchall()
         else:
-            rows = con.execute(query, tuple(params)).fetchall()
+            rows = con.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
 
+def cache_storage_key() -> str:
+    return "postgres" if USE_POSTGRES else f"sqlite:{DB_FILE.resolve()}"
+
+
+def clear_data_cache() -> None:
+    try:
+        _cached_fetch_one.clear()
+        _cached_fetch_all.clear()
+    except Exception:
+        pass
+
+
+def fetch_one(query: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
+    return _cached_fetch_one(cache_storage_key(), query, tuple(params))
+
+
+def fetch_all(query: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
+    return _cached_fetch_all(cache_storage_key(), query, tuple(params))
+
+
 def execute(query: str, params: Iterable[Any] = ()) -> int:
+    result_id = 0
     with db_connection() as con:
         if USE_POSTGRES:
             translated = postgres_query(query)
@@ -192,13 +215,15 @@ def execute(query: str, params: Iterable[Any] = ()) -> int:
             if clean.upper().startswith("INSERT ") and "RETURNING " not in clean.upper():
                 row = con.execute(clean + " RETURNING id", tuple(params)).fetchone()
                 if row and row.get("id") is not None:
-                    return int(row["id"])
-                return 0
-            con.execute(translated, tuple(params))
-            return 0
+                    result_id = int(row["id"])
+            else:
+                con.execute(translated, tuple(params))
+        else:
+            cursor = con.execute(query, tuple(params))
+            result_id = int(cursor.lastrowid or 0)
 
-        cursor = con.execute(query, tuple(params))
-        return int(cursor.lastrowid or 0)
+    clear_data_cache()
+    return result_id
 
 
 def execute_many(query: str, rows: Iterable[Iterable[Any]]) -> None:
@@ -210,6 +235,7 @@ def execute_many(query: str, rows: Iterable[Iterable[Any]]) -> None:
             con.executemany(postgres_query(query), row_list)
         else:
             con.executemany(query, row_list)
+    clear_data_cache()
 
 
 def init_database() -> None:
@@ -232,6 +258,8 @@ def init_database() -> None:
                 preferred_tone TEXT DEFAULT 'Professional',
                 sender_name TEXT DEFAULT '',
                 sender_email TEXT DEFAULT '',
+                onboarding_seen INTEGER DEFAULT 0,
+                demo_loaded INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
             )
             """,
@@ -340,6 +368,7 @@ def init_database() -> None:
                 sent_at TEXT DEFAULT '',
                 completed_at TEXT DEFAULT '',
                 last_error TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '{}',
                 created_at TEXT NOT NULL
             )
             """,
@@ -357,8 +386,15 @@ def init_database() -> None:
             """,
             "CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id)",
             "CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status)",
+            "CREATE INDEX IF NOT EXISTS idx_leads_next_followup ON leads(next_followup_date)",
+            "CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(lead_source)",
             "CREATE INDEX IF NOT EXISTS idx_projects_company ON projects(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(project_status)",
             "CREATE INDEX IF NOT EXISTS idx_tasks_company ON tasks(company_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_related ON tasks(related_type, related_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)",
+            "CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category)",
             "CREATE INDEX IF NOT EXISTS idx_feedback_company ON feedback(company_id)",
         ]
         with db_connection() as con:
@@ -384,6 +420,8 @@ def init_database() -> None:
                 preferred_tone TEXT DEFAULT 'Professional',
                 sender_name TEXT DEFAULT '',
                 sender_email TEXT DEFAULT '',
+                onboarding_seen INTEGER DEFAULT 0,
+                demo_loaded INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 
@@ -496,6 +534,7 @@ def init_database() -> None:
                 sent_at TEXT DEFAULT '',
                 completed_at TEXT DEFAULT '',
                 last_error TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
             );
@@ -514,8 +553,15 @@ def init_database() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company_id);
             CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
+            CREATE INDEX IF NOT EXISTS idx_leads_next_followup ON leads(next_followup_date);
+            CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(lead_source);
             CREATE INDEX IF NOT EXISTS idx_projects_company ON projects(company_id);
+            CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(project_status);
             CREATE INDEX IF NOT EXISTS idx_tasks_company ON tasks(company_id);
+            CREATE INDEX IF NOT EXISTS idx_tasks_related ON tasks(related_type, related_id);
+            CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date);
+            CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+            CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category);
             CREATE INDEX IF NOT EXISTS idx_feedback_company ON feedback(company_id);
             """
         )
@@ -526,8 +572,18 @@ def ensure_schema_migrations() -> None:
     if USE_POSTGRES:
         with db_connection() as con:
             con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS owner_key TEXT")
+            con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS onboarding_seen INTEGER DEFAULT 0")
+            con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS demo_loaded INTEGER DEFAULT 0")
+            con.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS metadata_json TEXT DEFAULT '{}'")
             con.execute("UPDATE companies SET owner_key = 'local-demo' WHERE owner_key IS NULL OR owner_key = ''")
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_owner_key ON companies(owner_key)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_leads_next_followup ON leads(next_followup_date)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(lead_source)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(project_status)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_related ON tasks(related_type, related_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category)")
             con.execute("""
                 CREATE TABLE IF NOT EXISTS feedback (
                     id SERIAL PRIMARY KEY,
@@ -546,7 +602,21 @@ def ensure_schema_migrations() -> None:
     company_columns = {row.get("name") for row in fetch_all("PRAGMA table_info(companies)")}
     if "owner_key" not in company_columns:
         execute("ALTER TABLE companies ADD COLUMN owner_key TEXT DEFAULT 'local-demo'")
+    if "onboarding_seen" not in company_columns:
+        execute("ALTER TABLE companies ADD COLUMN onboarding_seen INTEGER DEFAULT 0")
+    if "demo_loaded" not in company_columns:
+        execute("ALTER TABLE companies ADD COLUMN demo_loaded INTEGER DEFAULT 0")
+    task_columns = {row.get("name") for row in fetch_all("PRAGMA table_info(tasks)")}
+    if "metadata_json" not in task_columns:
+        execute("ALTER TABLE tasks ADD COLUMN metadata_json TEXT DEFAULT '{}'")
     execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_owner_key ON companies(owner_key)")
+    execute("CREATE INDEX IF NOT EXISTS idx_leads_next_followup ON leads(next_followup_date)")
+    execute("CREATE INDEX IF NOT EXISTS idx_leads_source ON leads(lead_source)")
+    execute("CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(project_status)")
+    execute("CREATE INDEX IF NOT EXISTS idx_tasks_related ON tasks(related_type, related_id)")
+    execute("CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks(due_date)")
+    execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+    execute("CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category)")
     execute("UPDATE companies SET owner_key = 'local-demo' WHERE owner_key IS NULL OR owner_key = ''")
 
     # feedback is also created by init_database, but this protects older databases.
@@ -826,6 +896,21 @@ def save_company_profile(profile: dict[str, Any]) -> None:
             ACTIVE_COMPANY_ID,
         ),
     )
+
+
+def update_company_flag(flag_name: str, value: int) -> None:
+    allowed_flags = {"onboarding_seen", "demo_loaded"}
+    if flag_name not in allowed_flags:
+        raise ValueError("Unsupported company flag.")
+    execute(f"UPDATE companies SET {flag_name} = ? WHERE id = ?", (int(value), ACTIVE_COMPANY_ID))
+
+
+def onboarding_has_been_seen(profile: dict[str, Any]) -> bool:
+    return str(profile.get("onboarding_seen", 0)).lower() in {"1", "true", "yes"}
+
+
+def demo_has_been_loaded(profile: dict[str, Any]) -> bool:
+    return str(profile.get("demo_loaded", 0)).lower() in {"1", "true", "yes"}
 
 
 def get_company_signature(profile: dict[str, Any]) -> str:
@@ -1311,6 +1396,201 @@ def get_proposal_versions(lead_id: int) -> list[dict[str, Any]]:
         "SELECT * FROM proposal_versions WHERE company_id = ? AND lead_id = ? ORDER BY version_number DESC",
         (ACTIVE_COMPANY_ID, lead_id),
     )
+
+
+
+# ============================================================
+# Demo Data + First-Login Guide
+# ============================================================
+
+def load_demo_data() -> tuple[bool, str]:
+    profile = get_company_profile()
+    if demo_has_been_loaded(profile):
+        return False, "Demo data is already loaded for this workspace."
+
+    demo_leads = [
+        {
+            "client_name": "Demo Sarah Johnson",
+            "project_type": "Kitchen Renovation",
+            "lead_source": "Google",
+            "client_email": "sarah.demo@example.com",
+            "client_phone": "780-555-0101",
+            "preferred_contact_method": "Email",
+            "project_address": "Demo Address - Edmonton",
+            "budget": "$45,000 - $60,000",
+            "timeline": "Wants to start in 6-8 weeks",
+            "estimated_value": "52000",
+            "notes": "Client wants new cabinets, counters, lighting, and a better layout. Concerned about timeline and disruption.",
+            "status": "Proposal Sent",
+        },
+        {
+            "client_name": "Demo Mike Thompson",
+            "project_type": "Basement Development",
+            "lead_source": "Referral",
+            "client_email": "mike.demo@example.com",
+            "client_phone": "780-555-0102",
+            "preferred_contact_method": "Phone",
+            "project_address": "Demo Address - Sherwood Park",
+            "budget": "$65,000 - $80,000",
+            "timeline": "Planning for spring",
+            "estimated_value": "72000",
+            "notes": "Referral lead. Wants legal bedroom, bathroom, rec room, and storage. Strong fit for a won project demo.",
+            "status": "Won",
+        },
+        {
+            "client_name": "Demo Lisa Brown",
+            "project_type": "Bathroom Renovation",
+            "lead_source": "Website",
+            "client_email": "lisa.demo@example.com",
+            "client_phone": "780-555-0103",
+            "preferred_contact_method": "Email",
+            "project_address": "Demo Address - St. Albert",
+            "budget": "$20,000 - $30,000",
+            "timeline": "ASAP if pricing works",
+            "estimated_value": "26000",
+            "notes": "Small bathroom renovation. Wants cleaner layout, new tile, vanity, and glass shower.",
+            "status": "Contacted",
+        },
+    ]
+
+    created_ids = []
+    for item in demo_leads:
+        lead_id = add_lead(
+            item["client_name"],
+            item["project_type"],
+            item["lead_source"],
+            item["client_email"],
+            item["client_phone"],
+            item["preferred_contact_method"],
+            item["project_address"],
+            item["budget"],
+            item["timeline"],
+            item["estimated_value"],
+            item["notes"],
+            today_string(),
+            future_date_string(2),
+            "High" if item["status"] in ["Proposal Sent", "Won"] else "Medium",
+            "Demo data created for walkthrough testing.",
+        )
+        created_ids.append(lead_id)
+        add_lead_event(lead_id, "Demo Lead Note", "This is fake demo data. Do not use it as real client information.")
+
+        if item["status"] == "Proposal Sent":
+            proposal = fallback_proposal(get_company_profile(), item["client_name"], item["project_type"], item["budget"], item["timeline"], item["notes"])
+            add_output("Proposal Draft", item["client_name"], proposal, lead_id=lead_id)
+            mark_proposal_generated(lead_id)
+            add_proposal_version(lead_id, item["client_name"], item["project_type"], proposal)
+            create_proposal_followup_tasks(lead_id)
+        elif item["status"] == "Won":
+            close_lead_from_details(lead_id, "Won", "Demo client approved the proposal.")
+            project = get_project_by_lead_id(lead_id)
+            if project:
+                update_project_stage(int(project["id"]), "In Progress", "Demo project is now actively in progress.")
+        else:
+            update_lead_status(
+                lead_id,
+                "Contacted",
+                "",
+                today_string(),
+                future_date_string(1),
+                "Medium",
+                "Demo lead needs a follow-up tomorrow.",
+            )
+
+    # Create one completed project so the Task Center shows review/referral actions.
+    completed_lead_id = add_lead(
+        "Demo Ahmed Patel",
+        "Exterior Renovation",
+        "Instagram",
+        "ahmed.demo@example.com",
+        "780-555-0104",
+        "Email",
+        "Demo Address - Edmonton",
+        "$35,000 - $45,000",
+        "Completed demo project",
+        "41000",
+        "Demo completed exterior project to show review/referral workflow.",
+        today_string(),
+        today_string(),
+        "Low",
+        "Demo completed project.",
+    )
+    close_lead_from_details(completed_lead_id, "Won", "Demo completed project won and delivered.")
+    completed_project = get_project_by_lead_id(completed_lead_id)
+    if completed_project:
+        update_project_stage(int(completed_project["id"]), "Completed", "Demo project completed. Review/referral tasks should now appear.")
+
+    create_task(
+        related_type="lead",
+        related_id=created_ids[0],
+        category="manual_followup",
+        title="Call Demo Sarah about kitchen proposal",
+        description="Demo overdue task to show how the Task Center highlights work that needs attention.",
+        due_date=(date.today() - timedelta(days=1)).isoformat(),
+        metadata={"demo": True},
+    )
+
+    update_company_flag("demo_loaded", 1)
+    return True, "Demo data loaded. Your dashboard, leads, projects, automations, and Task Center should now look active."
+
+
+def clear_demo_data() -> tuple[bool, str]:
+    demo_names = {"Demo Sarah Johnson", "Demo Mike Thompson", "Demo Lisa Brown", "Demo Ahmed Patel"}
+    for project in get_projects():
+        if project.get("client_name") in demo_names:
+            execute("DELETE FROM projects WHERE id = ? AND company_id = ?", (project.get("id"), ACTIVE_COMPANY_ID))
+    for lead in get_leads():
+        if lead.get("client_name") in demo_names:
+            delete_lead(int(lead["id"]))
+    execute(
+        "DELETE FROM tasks WHERE company_id = ? AND (title LIKE 'Call Demo%' OR title LIKE 'Send review request to Demo%' OR title LIKE 'Send referral request to Demo%')",
+        (ACTIVE_COMPANY_ID,),
+    )
+    update_company_flag("demo_loaded", 0)
+    return True, "Demo data cleared for this workspace."
+
+
+def render_how_builderflow_works(standalone: bool = False) -> None:
+    if standalone:
+        st.header("How BuilderFlow Works")
+    st.markdown(
+        """
+        <div class='bf-card'>
+            <div class='bf-section-label'>BuilderFlow Workflow</div>
+            <h3>From lead to review/referral in one system</h3>
+            <ol>
+                <li><b>Add a lead</b> with source, project type, budget, timeline, and notes.</li>
+                <li><b>Generate a proposal draft</b> from the lead details and walkthrough notes.</li>
+                <li><b>Auto-schedule the 5-touch follow-up plan</b> so estimates do not go cold.</li>
+                <li><b>Send follow-up emails</b> from Automations or manual Lead Follow-Up.</li>
+                <li><b>Mark the lead Won or Lost</b> so close rate and pipeline data stay useful.</li>
+                <li><b>Track won projects</b> through Deposit, Scheduled, In Progress, Waiting, and Completed.</li>
+                <li><b>Trigger review/referral tasks</b> when the project is complete.</li>
+                <li><b>Use Growth Insights</b> to see which sources and project types create real won value.</li>
+            </ol>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_first_login_guide(profile: dict[str, Any]) -> None:
+    if onboarding_has_been_seen(profile):
+        return
+    st.markdown(
+        "<div class='bf-card'><div class='bf-section-label'>First-Time Setup</div>"
+        "Welcome to BuilderFlow. This quick guide only appears once for this workspace. "
+        "Use it to understand the workflow before adding real client information.</div>",
+        unsafe_allow_html=True,
+    )
+    render_how_builderflow_works(standalone=False)
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        if st.button("Got it — do not show again"):
+            update_company_flag("onboarding_seen", 1)
+            st.rerun()
+    with c2:
+        st.caption("You can still open this later from the How BuilderFlow Works page.")
 
 
 # ============================================================
@@ -2616,6 +2896,8 @@ if USE_POSTGRES:
 else:
     st.info("Local testing mode is active. BuilderFlow is using builderflow.db on your computer.")
 
+render_first_login_guide(profile)
+
 
 # ============================================================
 # Sidebar Navigation
@@ -2626,7 +2908,7 @@ with st.sidebar:
     st.markdown("<span style='color:#d4af37;font-size:13px;font-weight:700;'>NAVIGATION</span>", unsafe_allow_html=True)
     main_area = st.radio(
         "Main Menu",
-        ["Owner Dashboard", "Leads", "Projects", "Task Center", "Automations", "Growth Insights", "Client Update", "Referral / Review", "Feedback / Report Bug", "Saved Outputs", "Account"],
+        ["Owner Dashboard", "How BuilderFlow Works", "Demo Mode", "Leads", "Projects", "Task Center", "Automations", "Growth Insights", "Client Update", "Referral / Review", "Feedback / Report Bug", "Saved Outputs", "Account"],
         label_visibility="collapsed",
     )
     lead_page = None
@@ -2650,6 +2932,67 @@ elif main_area == "Projects":
     current_page = project_page
 else:
     current_page = main_area
+
+
+# ============================================================
+# Page: How BuilderFlow Works
+# ============================================================
+
+if current_page == "How BuilderFlow Works":
+    render_how_builderflow_works(standalone=True)
+    st.info("For beta demos, the cleanest walkthrough is: Demo Mode → Load Demo Data → Owner Dashboard → Proposal Draft → Automations → Projects → Task Center → Growth Insights.")
+
+
+# ============================================================
+# Page: Demo Mode
+# ============================================================
+
+if current_page == "Demo Mode":
+    st.header("Demo Mode")
+    st.markdown(
+        "<div class='bf-card'><div class='bf-section-label'>Safe Demo Workspace</div>"
+        "Load fake leads, projects, automations, and tasks so BuilderFlow looks alive during a meeting. "
+        "Use this for demos instead of entering real company/client information.</div>",
+        unsafe_allow_html=True,
+    )
+
+    current_profile = get_company_profile()
+    if demo_has_been_loaded(current_profile):
+        st.success("Demo data is currently loaded for this workspace.")
+    else:
+        st.info("Demo data has not been loaded yet for this workspace.")
+
+    d1, d2 = st.columns(2)
+    with d1:
+        if st.button("Load Demo Data"):
+            ok, message = load_demo_data()
+            if ok:
+                st.success(message)
+            else:
+                st.info(message)
+            st.rerun()
+    with d2:
+        if st.button("Clear Demo Data"):
+            ok, message = clear_demo_data()
+            if ok:
+                st.success(message)
+            else:
+                st.error(message)
+            st.rerun()
+
+    st.divider()
+    st.subheader("Demo Script")
+    st.markdown(
+        """
+        - Start on Owner Dashboard and show overdue tasks, pipeline value, and active projects.
+        - Open Leads → Lead Workspace and select Demo Sarah Johnson.
+        - Open Leads → Proposal Draft and generate a proposal from a saved lead.
+        - Open Automations and show the 5-touch follow-up system.
+        - Open Projects and show Demo Mike Thompson in progress.
+        - Open Task Center and show review/referral tasks from the completed demo project.
+        - Open Growth Insights and explain source/project-type performance.
+        """
+    )
 
 
 # ============================================================
