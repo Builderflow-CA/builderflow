@@ -1669,73 +1669,147 @@ def load_demo_data() -> tuple[bool, str]:
 
 
 def clear_demo_data(update_flag: bool = True) -> tuple[bool, str]:
-    demo_names = {
+    """Clear ALL fake demo data quickly and safely.
+
+    This version is intentionally more aggressive because demo rows can create:
+    - proposal follow-up tasks
+    - post-completion review/referral tasks
+    - project events
+    - lead events
+    - saved outputs
+
+    It deletes anything connected to the demo leads/projects in one database pass, then clears cache once.
+    """
+    demo_names = [
         "Demo Sarah Johnson",
         "Demo Mike Thompson",
         "Demo Lisa Brown",
         "Demo Ahmed Patel",
         "Demo Priya Singh",
         "Demo Carlos Rivera",
-    }
+    ]
 
-    # Delete demo leads first. Related outputs/events/tasks/projects should cascade where supported.
-    for lead in get_leads():
-        if lead.get("client_name") in demo_names:
-            delete_lead(int(lead["id"]))
+    name_placeholders = ", ".join(["?"] * len(demo_names))
+    like_patterns = [f"%{name}%" for name in demo_names]
 
-    # Extra cleanup for any demo rows left behind.
-    for project in get_projects():
-        if project.get("client_name") in demo_names:
-            execute("DELETE FROM projects WHERE id = ? AND company_id = ?", (project.get("id"), ACTIVE_COMPANY_ID))
+    with db_connection() as con:
+        def run(query: str, params: tuple = ()):
+            if USE_POSTGRES:
+                return con.execute(postgres_query(query), params)
+            return con.execute(query, params)
 
-    execute(
-        """
-        DELETE FROM tasks
-        WHERE company_id = ?
-          AND (
-            title LIKE ?
-            OR title LIKE ?
-            OR title LIKE ?
-            OR title LIKE ?
-            OR title LIKE ?
-            OR title LIKE ?
-            OR metadata_json LIKE ?
-          )
-        """,
-        (
-            ACTIVE_COMPANY_ID,
-            "%Demo Sarah%",
-            "%Demo Mike%",
-            "%Demo Lisa%",
-            "%Demo Ahmed%",
-            "%Demo Priya%",
-            "%Demo Carlos%",
-            "%demo%",
-        ),
-    )
+        lead_rows = run(
+            f"SELECT id FROM leads WHERE company_id = ? AND client_name IN ({name_placeholders})",
+            (ACTIVE_COMPANY_ID, *demo_names),
+        ).fetchall()
+        demo_lead_ids = [int(row["id"]) for row in lead_rows]
 
-    execute(
-        """
-        DELETE FROM outputs
-        WHERE company_id = ?
-          AND client_name IN (?, ?, ?, ?, ?, ?)
-        """,
-        (ACTIVE_COMPANY_ID, *tuple(demo_names)),
-    )
+        if demo_lead_ids:
+            lead_placeholders = ", ".join(["?"] * len(demo_lead_ids))
+            project_rows = run(
+                f"""
+                SELECT id FROM projects
+                WHERE company_id = ?
+                  AND (
+                    lead_id IN ({lead_placeholders})
+                    OR client_name IN ({name_placeholders})
+                  )
+                """,
+                (ACTIVE_COMPANY_ID, *demo_lead_ids, *demo_names),
+            ).fetchall()
+        else:
+            project_rows = run(
+                f"SELECT id FROM projects WHERE company_id = ? AND client_name IN ({name_placeholders})",
+                (ACTIVE_COMPANY_ID, *demo_names),
+            ).fetchall()
 
-    execute(
-        """
-        DELETE FROM feedback
-        WHERE company_id = ? AND feedback_type = 'Demo Feedback'
-        """,
-        (ACTIVE_COMPANY_ID,),
-    )
+        demo_project_ids = [int(row["id"]) for row in project_rows]
 
-    if update_flag:
-        update_company_flag("demo_loaded", 0)
-        clear_data_cache()
+        task_conditions = []
+        task_params = [ACTIVE_COMPANY_ID]
 
-    return True, "Demo data cleared for this workspace."
+        if demo_lead_ids:
+            lead_placeholders = ", ".join(["?"] * len(demo_lead_ids))
+            task_conditions.append(f"(related_type = 'lead' AND related_id IN ({lead_placeholders}))")
+            task_params.extend(demo_lead_ids)
+
+        if demo_project_ids:
+            project_placeholders = ", ".join(["?"] * len(demo_project_ids))
+            task_conditions.append(f"(related_type = 'project' AND related_id IN ({project_placeholders}))")
+            task_params.extend(demo_project_ids)
+
+        for _ in like_patterns:
+            task_conditions.append("title LIKE ?")
+        task_params.extend(like_patterns)
+
+        task_conditions.append("metadata_json LIKE ?")
+        task_params.append("%demo%")
+
+        if task_conditions:
+            run(
+                f"""
+                DELETE FROM tasks
+                WHERE company_id = ?
+                  AND ({' OR '.join(task_conditions)})
+                """,
+                tuple(task_params),
+            )
+
+        if demo_project_ids:
+            project_placeholders = ", ".join(["?"] * len(demo_project_ids))
+            run(
+                f"DELETE FROM project_events WHERE company_id = ? AND project_id IN ({project_placeholders})",
+                (ACTIVE_COMPANY_ID, *demo_project_ids),
+            )
+            run(
+                f"DELETE FROM projects WHERE company_id = ? AND id IN ({project_placeholders})",
+                (ACTIVE_COMPANY_ID, *demo_project_ids),
+            )
+
+        if demo_lead_ids:
+            lead_placeholders = ", ".join(["?"] * len(demo_lead_ids))
+            run(
+                f"DELETE FROM proposal_versions WHERE company_id = ? AND lead_id IN ({lead_placeholders})",
+                (ACTIVE_COMPANY_ID, *demo_lead_ids),
+            )
+            run(
+                f"DELETE FROM lead_events WHERE company_id = ? AND lead_id IN ({lead_placeholders})",
+                (ACTIVE_COMPANY_ID, *demo_lead_ids),
+            )
+            run(
+                f"DELETE FROM outputs WHERE company_id = ? AND (lead_id IN ({lead_placeholders}) OR client_name IN ({name_placeholders}))",
+                (ACTIVE_COMPANY_ID, *demo_lead_ids, *demo_names),
+            )
+            run(
+                f"DELETE FROM projects WHERE company_id = ? AND lead_id IN ({lead_placeholders})",
+                (ACTIVE_COMPANY_ID, *demo_lead_ids),
+            )
+            run(
+                f"DELETE FROM leads WHERE company_id = ? AND id IN ({lead_placeholders})",
+                (ACTIVE_COMPANY_ID, *demo_lead_ids),
+            )
+        else:
+            run(
+                f"DELETE FROM outputs WHERE company_id = ? AND client_name IN ({name_placeholders})",
+                (ACTIVE_COMPANY_ID, *demo_names),
+            )
+
+        run(
+            "DELETE FROM feedback WHERE company_id = ? AND feedback_type = 'Demo Feedback'",
+            (ACTIVE_COMPANY_ID,),
+        )
+
+        if update_flag:
+            run(
+                "UPDATE companies SET demo_loaded = 0 WHERE id = ?",
+                (ACTIVE_COMPANY_ID,),
+            )
+
+    clear_data_cache()
+    deleted_leads = len(demo_lead_ids)
+    deleted_projects = len(demo_project_ids)
+    return True, f"Demo data cleared. Removed {deleted_leads} demo leads and {deleted_projects} demo projects, plus connected tasks/outputs/events."
+
 
 
 def render_how_builderflow_works(standalone: bool = False) -> None:
@@ -3153,7 +3227,8 @@ if current_page == "Demo Mode":
     d1, d2 = st.columns(2)
     with d1:
         if st.button("Load / Reload Full Demo Data"):
-            ok, message = load_demo_data()
+            with st.spinner("🔨 Loading a full demo workspace..."):
+                ok, message = load_demo_data()
             if ok:
                 st.success(message)
             else:
@@ -3161,7 +3236,8 @@ if current_page == "Demo Mode":
             st.rerun()
     with d2:
         if st.button("Clear Demo Data"):
-            ok, message = clear_demo_data()
+            with st.spinner("🧹 Clearing demo data..."):
+                ok, message = clear_demo_data()
             if ok:
                 st.success(message)
             else:
