@@ -141,20 +141,42 @@ def postgres_query(query: str) -> str:
     return query.replace("?", "%s")
 
 
+@st.cache_resource(show_spinner=False)
+def get_postgres_connection():
+    """Keep one warm Postgres connection instead of reconnecting on every click.
+
+    This is a big speed improvement for Streamlit Cloud + Supabase because
+    opening a new cloud database connection repeatedly adds noticeable delay.
+    """
+    if not PSYCOPG_AVAILABLE:
+        raise RuntimeError(
+            "DATABASE_URL is configured, but psycopg is not installed. "
+            "Run: pip install 'psycopg[binary]'"
+        )
+
+    connection = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+    return connection
+
+
 @contextmanager
 def db_connection():
     if USE_POSTGRES:
-        if not PSYCOPG_AVAILABLE:
-            raise RuntimeError(
-                "DATABASE_URL is configured, but psycopg is not installed. "
-                "Run: pip install 'psycopg[binary]'"
-            )
-        connection = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        connection = get_postgres_connection()
+
+        # If Supabase/Streamlit closed the connection while idle, rebuild it once.
+        if getattr(connection, "closed", False):
+            get_postgres_connection.clear()
+            connection = get_postgres_connection()
+
         try:
             yield connection
             connection.commit()
-        finally:
-            connection.close()
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+            raise
     else:
         connection = sqlite3.connect(DB_FILE, timeout=30)
         connection.row_factory = sqlite3.Row
@@ -166,7 +188,7 @@ def db_connection():
             connection.close()
 
 
-@st.cache_data(ttl=90, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _cached_fetch_one(storage_key: str, query: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
     with db_connection() as con:
         if USE_POSTGRES:
@@ -176,7 +198,7 @@ def _cached_fetch_one(storage_key: str, query: str, params: tuple[Any, ...]) -> 
         return dict(row) if row else None
 
 
-@st.cache_data(ttl=90, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _cached_fetch_all(storage_key: str, query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
     with db_connection() as con:
         if USE_POSTGRES:
@@ -1669,146 +1691,33 @@ def load_demo_data() -> tuple[bool, str]:
 
 
 def clear_demo_data(update_flag: bool = True) -> tuple[bool, str]:
-    """Clear ALL fake demo data quickly and safely.
+    """Fast demo reset.
 
-    This version is intentionally more aggressive because demo rows can create:
-    - proposal follow-up tasks
-    - post-completion review/referral tasks
-    - project events
-    - lead events
-    - saved outputs
-
-    It deletes anything connected to the demo leads/projects in one database pass, then clears cache once.
+    For the meeting/demo workspace, clearing demo data should reset the whole active
+    workspace instead of trying to surgically remove only some demo rows. This prevents
+    old automation/review/referral tasks from stacking up after repeated load/clear cycles.
     """
-    demo_names = [
-        "Demo Sarah Johnson",
-        "Demo Mike Thompson",
-        "Demo Lisa Brown",
-        "Demo Ahmed Patel",
-        "Demo Priya Singh",
-        "Demo Carlos Rivera",
-    ]
-
-    name_placeholders = ", ".join(["?"] * len(demo_names))
-    like_patterns = [f"%{name}%" for name in demo_names]
-
     with db_connection() as con:
         def run(query: str, params: tuple = ()):
             if USE_POSTGRES:
                 return con.execute(postgres_query(query), params)
             return con.execute(query, params)
 
-        lead_rows = run(
-            f"SELECT id FROM leads WHERE company_id = ? AND client_name IN ({name_placeholders})",
-            (ACTIVE_COMPANY_ID, *demo_names),
-        ).fetchall()
-        demo_lead_ids = [int(row["id"]) for row in lead_rows]
-
-        if demo_lead_ids:
-            lead_placeholders = ", ".join(["?"] * len(demo_lead_ids))
-            project_rows = run(
-                f"""
-                SELECT id FROM projects
-                WHERE company_id = ?
-                  AND (
-                    lead_id IN ({lead_placeholders})
-                    OR client_name IN ({name_placeholders})
-                  )
-                """,
-                (ACTIVE_COMPANY_ID, *demo_lead_ids, *demo_names),
-            ).fetchall()
-        else:
-            project_rows = run(
-                f"SELECT id FROM projects WHERE company_id = ? AND client_name IN ({name_placeholders})",
-                (ACTIVE_COMPANY_ID, *demo_names),
-            ).fetchall()
-
-        demo_project_ids = [int(row["id"]) for row in project_rows]
-
-        task_conditions = []
-        task_params = [ACTIVE_COMPANY_ID]
-
-        if demo_lead_ids:
-            lead_placeholders = ", ".join(["?"] * len(demo_lead_ids))
-            task_conditions.append(f"(related_type = 'lead' AND related_id IN ({lead_placeholders}))")
-            task_params.extend(demo_lead_ids)
-
-        if demo_project_ids:
-            project_placeholders = ", ".join(["?"] * len(demo_project_ids))
-            task_conditions.append(f"(related_type = 'project' AND related_id IN ({project_placeholders}))")
-            task_params.extend(demo_project_ids)
-
-        for _ in like_patterns:
-            task_conditions.append("title LIKE ?")
-        task_params.extend(like_patterns)
-
-        task_conditions.append("metadata_json LIKE ?")
-        task_params.append("%demo%")
-
-        if task_conditions:
-            run(
-                f"""
-                DELETE FROM tasks
-                WHERE company_id = ?
-                  AND ({' OR '.join(task_conditions)})
-                """,
-                tuple(task_params),
-            )
-
-        if demo_project_ids:
-            project_placeholders = ", ".join(["?"] * len(demo_project_ids))
-            run(
-                f"DELETE FROM project_events WHERE company_id = ? AND project_id IN ({project_placeholders})",
-                (ACTIVE_COMPANY_ID, *demo_project_ids),
-            )
-            run(
-                f"DELETE FROM projects WHERE company_id = ? AND id IN ({project_placeholders})",
-                (ACTIVE_COMPANY_ID, *demo_project_ids),
-            )
-
-        if demo_lead_ids:
-            lead_placeholders = ", ".join(["?"] * len(demo_lead_ids))
-            run(
-                f"DELETE FROM proposal_versions WHERE company_id = ? AND lead_id IN ({lead_placeholders})",
-                (ACTIVE_COMPANY_ID, *demo_lead_ids),
-            )
-            run(
-                f"DELETE FROM lead_events WHERE company_id = ? AND lead_id IN ({lead_placeholders})",
-                (ACTIVE_COMPANY_ID, *demo_lead_ids),
-            )
-            run(
-                f"DELETE FROM outputs WHERE company_id = ? AND (lead_id IN ({lead_placeholders}) OR client_name IN ({name_placeholders}))",
-                (ACTIVE_COMPANY_ID, *demo_lead_ids, *demo_names),
-            )
-            run(
-                f"DELETE FROM projects WHERE company_id = ? AND lead_id IN ({lead_placeholders})",
-                (ACTIVE_COMPANY_ID, *demo_lead_ids),
-            )
-            run(
-                f"DELETE FROM leads WHERE company_id = ? AND id IN ({lead_placeholders})",
-                (ACTIVE_COMPANY_ID, *demo_lead_ids),
-            )
-        else:
-            run(
-                f"DELETE FROM outputs WHERE company_id = ? AND client_name IN ({name_placeholders})",
-                (ACTIVE_COMPANY_ID, *demo_names),
-            )
-
-        run(
-            "DELETE FROM feedback WHERE company_id = ? AND feedback_type = 'Demo Feedback'",
-            (ACTIVE_COMPANY_ID,),
-        )
+        # Delete child tables first, then parent rows.
+        run("DELETE FROM feedback WHERE company_id = ?", (ACTIVE_COMPANY_ID,))
+        run("DELETE FROM tasks WHERE company_id = ?", (ACTIVE_COMPANY_ID,))
+        run("DELETE FROM project_events WHERE company_id = ?", (ACTIVE_COMPANY_ID,))
+        run("DELETE FROM projects WHERE company_id = ?", (ACTIVE_COMPANY_ID,))
+        run("DELETE FROM proposal_versions WHERE company_id = ?", (ACTIVE_COMPANY_ID,))
+        run("DELETE FROM outputs WHERE company_id = ?", (ACTIVE_COMPANY_ID,))
+        run("DELETE FROM lead_events WHERE company_id = ?", (ACTIVE_COMPANY_ID,))
+        run("DELETE FROM leads WHERE company_id = ?", (ACTIVE_COMPANY_ID,))
 
         if update_flag:
-            run(
-                "UPDATE companies SET demo_loaded = 0 WHERE id = ?",
-                (ACTIVE_COMPANY_ID,),
-            )
+            run("UPDATE companies SET demo_loaded = 0 WHERE id = ?", (ACTIVE_COMPANY_ID,))
 
     clear_data_cache()
-    deleted_leads = len(demo_lead_ids)
-    deleted_projects = len(demo_project_ids)
-    return True, f"Demo data cleared. Removed {deleted_leads} demo leads and {deleted_projects} demo projects, plus connected tasks/outputs/events."
+    return True, "Demo workspace cleared. Leads, projects, tasks, automations, outputs, events, and feedback were reset."
 
 
 
@@ -3235,7 +3144,7 @@ if current_page == "Demo Mode":
                 st.info(message)
             st.rerun()
     with d2:
-        if st.button("Clear Demo Data"):
+        if st.button("Clear Demo Data / Reset Demo Workspace"):
             with st.spinner("🧹 Clearing demo data..."):
                 ok, message = clear_demo_data()
             if ok:
