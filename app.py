@@ -1562,7 +1562,7 @@ def load_demo_data() -> tuple[bool, str]:
                 mark_proposal_generated(lead_id)
                 create_proposal_followup_tasks(lead_id)
 
-                followup = fallback_followup(profile, item["client_name"], item["project_type"], item["budget"], item["timeline"], item["notes"], "Post-Proposal Follow-Up")
+                followup = fallback_follow_up(profile, item["client_name"], item["project_type"], item["budget"], item["timeline"], item["notes"], "Post-Proposal Follow-Up")
                 add_output("Follow-Up Email", item["client_name"], followup, lead_id=lead_id)
 
             elif item["status"] == "Won":
