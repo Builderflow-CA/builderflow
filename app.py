@@ -166,7 +166,7 @@ def db_connection():
             connection.close()
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=90, show_spinner=False)
 def _cached_fetch_one(storage_key: str, query: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
     with db_connection() as con:
         if USE_POSTGRES:
@@ -176,7 +176,7 @@ def _cached_fetch_one(storage_key: str, query: str, params: tuple[Any, ...]) -> 
         return dict(row) if row else None
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=90, show_spinner=False)
 def _cached_fetch_all(storage_key: str, query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
     with db_connection() as con:
         if USE_POSTGRES:
@@ -222,7 +222,8 @@ def execute(query: str, params: Iterable[Any] = ()) -> int:
             cursor = con.execute(query, tuple(params))
             result_id = int(cursor.lastrowid or 0)
 
-    clear_data_cache()
+    if not st.session_state.get("_bulk_demo_loading", False):
+        clear_data_cache()
     return result_id
 
 
@@ -235,9 +236,11 @@ def execute_many(query: str, rows: Iterable[Iterable[Any]]) -> None:
             con.executemany(postgres_query(query), row_list)
         else:
             con.executemany(query, row_list)
-    clear_data_cache()
+    if not st.session_state.get("_bulk_demo_loading", False):
+        clear_data_cache()
 
 
+@st.cache_resource(show_spinner=False)
 def init_database() -> None:
     """Create the local SQLite schema or the hosted Postgres schema."""
     if USE_POSTGRES:
@@ -1399,154 +1402,330 @@ def get_proposal_versions(lead_id: int) -> list[dict[str, Any]]:
 
 
 
+
 # ============================================================
 # Demo Data + First-Login Guide
 # ============================================================
 
 def load_demo_data() -> tuple[bool, str]:
-    profile = get_company_profile()
-    if demo_has_been_loaded(profile):
-        return False, "Demo data is already loaded for this workspace."
+    """Load a complete fake data set for meetings and beta walkthroughs."""
+    st.session_state["_bulk_demo_loading"] = True
 
-    demo_leads = [
-        {
-            "client_name": "Demo Sarah Johnson",
-            "project_type": "Kitchen Renovation",
-            "lead_source": "Google",
-            "client_email": "sarah.demo@example.com",
-            "client_phone": "780-555-0101",
-            "preferred_contact_method": "Email",
-            "project_address": "Demo Address - Edmonton",
-            "budget": "$45,000 - $60,000",
-            "timeline": "Wants to start in 6-8 weeks",
-            "estimated_value": "52000",
-            "notes": "Client wants new cabinets, counters, lighting, and a better layout. Concerned about timeline and disruption.",
-            "status": "Proposal Sent",
-        },
-        {
-            "client_name": "Demo Mike Thompson",
-            "project_type": "Basement Development",
-            "lead_source": "Referral",
-            "client_email": "mike.demo@example.com",
-            "client_phone": "780-555-0102",
-            "preferred_contact_method": "Phone",
-            "project_address": "Demo Address - Sherwood Park",
-            "budget": "$65,000 - $80,000",
-            "timeline": "Planning for spring",
-            "estimated_value": "72000",
-            "notes": "Referral lead. Wants legal bedroom, bathroom, rec room, and storage. Strong fit for a won project demo.",
-            "status": "Won",
-        },
-        {
-            "client_name": "Demo Lisa Brown",
-            "project_type": "Bathroom Renovation",
-            "lead_source": "Website",
-            "client_email": "lisa.demo@example.com",
-            "client_phone": "780-555-0103",
-            "preferred_contact_method": "Email",
-            "project_address": "Demo Address - St. Albert",
-            "budget": "$20,000 - $30,000",
-            "timeline": "ASAP if pricing works",
-            "estimated_value": "26000",
-            "notes": "Small bathroom renovation. Wants cleaner layout, new tile, vanity, and glass shower.",
-            "status": "Contacted",
-        },
-    ]
+    try:
+        # Always clear previous demo rows first so the demo does not half-load or duplicate.
+        clear_demo_data(update_flag=False)
 
-    created_ids = []
-    for item in demo_leads:
-        lead_id = add_lead(
-            item["client_name"],
-            item["project_type"],
-            item["lead_source"],
-            item["client_email"],
-            item["client_phone"],
-            item["preferred_contact_method"],
-            item["project_address"],
-            item["budget"],
-            item["timeline"],
-            item["estimated_value"],
-            item["notes"],
-            today_string(),
-            future_date_string(2),
-            "High" if item["status"] in ["Proposal Sent", "Won"] else "Medium",
-            "Demo data created for walkthrough testing.",
-        )
-        created_ids.append(lead_id)
-        add_lead_event(lead_id, "Demo Lead Note", "This is fake demo data. Do not use it as real client information.")
+        profile = get_company_profile()
+        if not profile.get("company_name"):
+            save_company_profile({
+                "company_name": "BuilderFlow Demo Builders",
+                "contact_name": "Demo Owner",
+                "phone": "780-555-0199",
+                "email": "demo@builderflow.test",
+                "website": "https://builderflow-demo.test",
+                "service_area": "Edmonton, Sherwood Park, St. Albert, and surrounding areas",
+                "main_services": "Kitchen renovations, basement developments, bathroom renovations, exterior upgrades, and custom residential projects",
+                "booking_link": "https://calendly.com/builderflow-demo/consultation",
+                "review_link": "https://g.page/r/demo-builderflow/review",
+                "preferred_tone": "Professional",
+                "sender_name": profile.get("sender_name", "BuilderFlow Demo"),
+                "sender_email": profile.get("sender_email", "onboarding@resend.dev"),
+            })
+            profile = get_company_profile()
 
-        if item["status"] == "Proposal Sent":
-            proposal = fallback_proposal(get_company_profile(), item["client_name"], item["project_type"], item["budget"], item["timeline"], item["notes"])
-            add_output("Proposal Draft", item["client_name"], proposal, lead_id=lead_id)
-            mark_proposal_generated(lead_id)
-            add_proposal_version(lead_id, item["client_name"], item["project_type"], proposal)
-            create_proposal_followup_tasks(lead_id)
-        elif item["status"] == "Won":
-            close_lead_from_details(lead_id, "Won", "Demo client approved the proposal.")
-            project = get_project_by_lead_id(lead_id)
-            if project:
-                update_project_stage(int(project["id"]), "In Progress", "Demo project is now actively in progress.")
-        else:
-            update_lead_status(
-                lead_id,
-                "Contacted",
-                "",
+        demo_leads = [
+            {
+                "client_name": "Demo Sarah Johnson",
+                "project_type": "Kitchen Renovation",
+                "lead_source": "Google",
+                "client_email": "sarah.demo@example.com",
+                "client_phone": "780-555-0101",
+                "preferred_contact_method": "Email",
+                "project_address": "Demo Address - Edmonton",
+                "budget": "$45,000 - $60,000",
+                "timeline": "Wants to start in 6-8 weeks",
+                "estimated_value": "52000",
+                "notes": "Client wants new cabinets, quartz counters, updated lighting, and a better kitchen layout. Concerned about timeline, dust, and being without a kitchen.",
+                "status": "Proposal Sent",
+                "priority": "High",
+                "next_followup_offset": 0,
+            },
+            {
+                "client_name": "Demo Mike Thompson",
+                "project_type": "Basement Development",
+                "lead_source": "Referral",
+                "client_email": "mike.demo@example.com",
+                "client_phone": "780-555-0102",
+                "preferred_contact_method": "Phone",
+                "project_address": "Demo Address - Sherwood Park",
+                "budget": "$65,000 - $80,000",
+                "timeline": "Planning for spring",
+                "estimated_value": "72000",
+                "notes": "Referral lead. Wants legal bedroom, bathroom, rec room, storage, and a clean handoff plan. Strong fit for a won project demo.",
+                "status": "Won",
+                "priority": "High",
+                "project_stage": "In Progress",
+            },
+            {
+                "client_name": "Demo Lisa Brown",
+                "project_type": "Bathroom Renovation",
+                "lead_source": "Website",
+                "client_email": "lisa.demo@example.com",
+                "client_phone": "780-555-0103",
+                "preferred_contact_method": "Email",
+                "project_address": "Demo Address - St. Albert",
+                "budget": "$20,000 - $30,000",
+                "timeline": "ASAP if pricing works",
+                "estimated_value": "26000",
+                "notes": "Small bathroom renovation. Wants walk-in shower, tile replacement, vanity upgrade, better ventilation, and clearer pricing options.",
+                "status": "Contacted",
+                "priority": "Medium",
+                "next_followup_offset": 1,
+            },
+            {
+                "client_name": "Demo Ahmed Patel",
+                "project_type": "Exterior Renovation",
+                "lead_source": "Instagram",
+                "client_email": "ahmed.demo@example.com",
+                "client_phone": "780-555-0104",
+                "preferred_contact_method": "Email",
+                "project_address": "Demo Address - Edmonton",
+                "budget": "$35,000 - $45,000",
+                "timeline": "Completed demo project",
+                "estimated_value": "41000",
+                "notes": "Completed exterior refresh with siding repairs, trim updates, and front entry improvements. Used to show review/referral workflow.",
+                "status": "Won",
+                "priority": "Low",
+                "project_stage": "Completed",
+            },
+            {
+                "client_name": "Demo Priya Singh",
+                "project_type": "Whole-Home Renovation",
+                "lead_source": "Facebook",
+                "client_email": "priya.demo@example.com",
+                "client_phone": "780-555-0105",
+                "preferred_contact_method": "Email",
+                "project_address": "Demo Address - Windermere",
+                "budget": "$120,000 - $160,000",
+                "timeline": "Researching options for fall",
+                "estimated_value": "145000",
+                "notes": "Large renovation opportunity. Client is comparing builders and wants phased pricing for main floor, bathrooms, and flooring.",
+                "status": "New",
+                "priority": "Medium",
+                "next_followup_offset": 3,
+            },
+            {
+                "client_name": "Demo Carlos Rivera",
+                "project_type": "Custom Home",
+                "lead_source": "Networking",
+                "client_email": "carlos.demo@example.com",
+                "client_phone": "780-555-0106",
+                "preferred_contact_method": "Phone",
+                "project_address": "Demo Address - Beaumont",
+                "budget": "$450,000 - $600,000",
+                "timeline": "Early planning",
+                "estimated_value": "525000",
+                "notes": "Early custom home inquiry. Not ready yet, but valuable long-term pipeline opportunity.",
+                "status": "No Response",
+                "priority": "Low",
+                "next_followup_offset": 21,
+            },
+        ]
+
+        created_ids: dict[str, int] = {}
+
+        for item in demo_leads:
+            lead_id = add_lead(
+                item["client_name"],
+                item["project_type"],
+                item["lead_source"],
+                item["client_email"],
+                item["client_phone"],
+                item["preferred_contact_method"],
+                item["project_address"],
+                item["budget"],
+                item["timeline"],
+                item["estimated_value"],
+                item["notes"],
                 today_string(),
-                future_date_string(1),
-                "Medium",
-                "Demo lead needs a follow-up tomorrow.",
+                future_date_string(item.get("next_followup_offset", 2)),
+                item["priority"],
+                "Demo data created for walkthrough testing.",
+            )
+            created_ids[item["client_name"]] = lead_id
+            add_lead_event(lead_id, "Demo Lead Note", "This is fake demo data for sales/demo walkthroughs. Do not use it as real client information.")
+
+            if item["status"] == "Proposal Sent":
+                proposal = fallback_proposal(profile, item["client_name"], item["project_type"], item["budget"], item["timeline"], item["notes"])
+                add_output("Proposal Draft", item["client_name"], proposal, lead_id=lead_id)
+                add_proposal_version(lead_id, item["client_name"], item["project_type"], proposal)
+                mark_proposal_generated(lead_id)
+                create_proposal_followup_tasks(lead_id)
+
+                followup = fallback_followup(profile, item["client_name"], item["project_type"], item["budget"], item["timeline"], item["notes"], "Post-Proposal Follow-Up")
+                add_output("Follow-Up Email", item["client_name"], followup, lead_id=lead_id)
+
+            elif item["status"] == "Won":
+                close_lead_from_details(lead_id, "Won", "Demo client approved the proposal.")
+                project = get_project_by_lead_id(lead_id)
+                if project:
+                    update_project_stage(int(project["id"]), item.get("project_stage", "In Progress"), f"Demo project moved to {item.get('project_stage', 'In Progress')}.")
+
+            elif item["status"] in ["Contacted", "New", "No Response"]:
+                update_lead_status(
+                    lead_id,
+                    item["status"],
+                    "",
+                    today_string(),
+                    future_date_string(item.get("next_followup_offset", 2)),
+                    item["priority"],
+                    "Demo follow-up scheduled.",
+                )
+
+        # Create overdue/manual/active tasks so Task Center looks useful.
+        sarah_id = created_ids.get("Demo Sarah Johnson")
+        lisa_id = created_ids.get("Demo Lisa Brown")
+        priya_id = created_ids.get("Demo Priya Singh")
+        carlos_id = created_ids.get("Demo Carlos Rivera")
+
+        if sarah_id:
+            create_task(
+                related_type="lead",
+                related_id=sarah_id,
+                category="manual_followup",
+                title="Call Demo Sarah about kitchen proposal",
+                description="Overdue demo task to show how Task Center highlights work that needs attention.",
+                due_date=(date.today() - timedelta(days=1)).isoformat(),
+                metadata={"demo": True},
             )
 
-    # Create one completed project so the Task Center shows review/referral actions.
-    completed_lead_id = add_lead(
+        if lisa_id:
+            create_task(
+                related_type="lead",
+                related_id=lisa_id,
+                category="site_visit",
+                title="Book site visit with Demo Lisa",
+                description="Confirm bathroom measurements, photos, and scope priorities.",
+                due_date=today_string(),
+                metadata={"demo": True},
+            )
+
+        if priya_id:
+            create_task(
+                related_type="lead",
+                related_id=priya_id,
+                category="estimate_prep",
+                title="Prepare phased pricing ideas for Demo Priya",
+                description="Create good/better/best or phased renovation talking points.",
+                due_date=future_date_string(3),
+                metadata={"demo": True},
+            )
+
+        if carlos_id:
+            create_task(
+                related_type="lead",
+                related_id=carlos_id,
+                category="long_term_nurture",
+                title="Check in with Demo Carlos later",
+                description="Long-term custom home inquiry. Keep warm without pushing too hard.",
+                due_date=future_date_string(21),
+                metadata={"demo": True},
+            )
+
+        # Add sample client update and review/referral outputs for the completed project.
+        ahmed_id = created_ids.get("Demo Ahmed Patel")
+        if ahmed_id:
+            update_msg = fallback_client_update(
+                profile,
+                "Demo Ahmed Patel",
+                "Exterior Renovation",
+                "Exterior repairs and trim updates are complete. Final cleanup is finished.",
+                "No major blockers remain.",
+                "Next step is sending the review/referral request and keeping the relationship warm.",
+            )
+            add_output("Client Update", "Demo Ahmed Patel", update_msg, lead_id=ahmed_id)
+
+            referral_msg = fallback_referral(
+                profile,
+                "Demo Ahmed Patel",
+                "Exterior Renovation",
+                "Project completed successfully. Client was happy with communication and cleanup.",
+            )
+            add_output("Referral / Review", "Demo Ahmed Patel", referral_msg, lead_id=ahmed_id)
+
+        add_feedback(
+            "Demo Feedback",
+            5,
+            "Demo feedback example: The workflow makes sense and the proposal follow-up automation is the strongest feature.",
+            "demo-feedback@example.com",
+        )
+
+        update_company_flag("demo_loaded", 1)
+        clear_data_cache()
+        return True, "Full demo data loaded: leads, projects, automations, tasks, saved outputs, growth data, and feedback examples are ready."
+
+    finally:
+        st.session_state["_bulk_demo_loading"] = False
+
+
+def clear_demo_data(update_flag: bool = True) -> tuple[bool, str]:
+    demo_names = {
+        "Demo Sarah Johnson",
+        "Demo Mike Thompson",
+        "Demo Lisa Brown",
         "Demo Ahmed Patel",
-        "Exterior Renovation",
-        "Instagram",
-        "ahmed.demo@example.com",
-        "780-555-0104",
-        "Email",
-        "Demo Address - Edmonton",
-        "$35,000 - $45,000",
-        "Completed demo project",
-        "41000",
-        "Demo completed exterior project to show review/referral workflow.",
-        today_string(),
-        today_string(),
-        "Low",
-        "Demo completed project.",
-    )
-    close_lead_from_details(completed_lead_id, "Won", "Demo completed project won and delivered.")
-    completed_project = get_project_by_lead_id(completed_lead_id)
-    if completed_project:
-        update_project_stage(int(completed_project["id"]), "Completed", "Demo project completed. Review/referral tasks should now appear.")
+        "Demo Priya Singh",
+        "Demo Carlos Rivera",
+    }
 
-    create_task(
-        related_type="lead",
-        related_id=created_ids[0],
-        category="manual_followup",
-        title="Call Demo Sarah about kitchen proposal",
-        description="Demo overdue task to show how the Task Center highlights work that needs attention.",
-        due_date=(date.today() - timedelta(days=1)).isoformat(),
-        metadata={"demo": True},
-    )
-
-    update_company_flag("demo_loaded", 1)
-    return True, "Demo data loaded. Your dashboard, leads, projects, automations, and Task Center should now look active."
-
-
-def clear_demo_data() -> tuple[bool, str]:
-    demo_names = {"Demo Sarah Johnson", "Demo Mike Thompson", "Demo Lisa Brown", "Demo Ahmed Patel"}
-    for project in get_projects():
-        if project.get("client_name") in demo_names:
-            execute("DELETE FROM projects WHERE id = ? AND company_id = ?", (project.get("id"), ACTIVE_COMPANY_ID))
+    # Delete demo leads first. Related outputs/events/tasks/projects should cascade where supported.
     for lead in get_leads():
         if lead.get("client_name") in demo_names:
             delete_lead(int(lead["id"]))
+
+    # Extra cleanup for any demo rows left behind.
+    for project in get_projects():
+        if project.get("client_name") in demo_names:
+            execute("DELETE FROM projects WHERE id = ? AND company_id = ?", (project.get("id"), ACTIVE_COMPANY_ID))
+
     execute(
-        "DELETE FROM tasks WHERE company_id = ? AND (title LIKE 'Call Demo%' OR title LIKE 'Send review request to Demo%' OR title LIKE 'Send referral request to Demo%')",
+        """
+        DELETE FROM tasks
+        WHERE company_id = ?
+          AND (
+            title LIKE '%Demo Sarah%'
+            OR title LIKE '%Demo Mike%'
+            OR title LIKE '%Demo Lisa%'
+            OR title LIKE '%Demo Ahmed%'
+            OR title LIKE '%Demo Priya%'
+            OR title LIKE '%Demo Carlos%'
+            OR metadata_json LIKE '%demo%'
+          )
+        """,
         (ACTIVE_COMPANY_ID,),
     )
-    update_company_flag("demo_loaded", 0)
+
+    execute(
+        """
+        DELETE FROM outputs
+        WHERE company_id = ?
+          AND client_name IN (?, ?, ?, ?, ?, ?)
+        """,
+        (ACTIVE_COMPANY_ID, *tuple(demo_names)),
+    )
+
+    execute(
+        """
+        DELETE FROM feedback
+        WHERE company_id = ? AND feedback_type = 'Demo Feedback'
+        """,
+        (ACTIVE_COMPANY_ID,),
+    )
+
+    if update_flag:
+        update_company_flag("demo_loaded", 0)
+        clear_data_cache()
+
     return True, "Demo data cleared for this workspace."
 
 
@@ -2940,7 +3119,7 @@ else:
 
 if current_page == "How BuilderFlow Works":
     render_how_builderflow_works(standalone=True)
-    st.info("For beta demos, the cleanest walkthrough is: Demo Mode → Load Demo Data → Owner Dashboard → Proposal Draft → Automations → Projects → Task Center → Growth Insights.")
+    st.info("For beta demos, the cleanest walkthrough is: Demo Mode → Load / Reload Full Demo Data → Owner Dashboard → Proposal Draft → Automations → Projects → Task Center → Growth Insights.")
 
 
 # ============================================================
@@ -2964,7 +3143,7 @@ if current_page == "Demo Mode":
 
     d1, d2 = st.columns(2)
     with d1:
-        if st.button("Load Demo Data"):
+        if st.button("Load / Reload Full Demo Data"):
             ok, message = load_demo_data()
             if ok:
                 st.success(message)
