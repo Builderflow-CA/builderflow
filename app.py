@@ -1693,16 +1693,25 @@ def clear_demo_data(update_flag: bool = True) -> tuple[bool, str]:
         DELETE FROM tasks
         WHERE company_id = ?
           AND (
-            title LIKE '%Demo Sarah%'
-            OR title LIKE '%Demo Mike%'
-            OR title LIKE '%Demo Lisa%'
-            OR title LIKE '%Demo Ahmed%'
-            OR title LIKE '%Demo Priya%'
-            OR title LIKE '%Demo Carlos%'
-            OR metadata_json LIKE '%demo%'
+            title LIKE ?
+            OR title LIKE ?
+            OR title LIKE ?
+            OR title LIKE ?
+            OR title LIKE ?
+            OR title LIKE ?
+            OR metadata_json LIKE ?
           )
         """,
-        (ACTIVE_COMPANY_ID,),
+        (
+            ACTIVE_COMPANY_ID,
+            "%Demo Sarah%",
+            "%Demo Mike%",
+            "%Demo Lisa%",
+            "%Demo Ahmed%",
+            "%Demo Priya%",
+            "%Demo Carlos%",
+            "%demo%",
+        ),
     )
 
     execute(
