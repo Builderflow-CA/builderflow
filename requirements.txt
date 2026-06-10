@@ -6,3 +6,4 @@ openai
 resend
 reportlab
 psycopg[binary]
+authlib
