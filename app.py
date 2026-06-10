@@ -56,6 +56,7 @@ APP_NAME = "BuilderFlow"
 DB_FILE = Path("builderflow.db")
 LEGACY_JSON_FILE = Path("builderflow_data.json")
 LOCAL_COMPANY_ID = 1
+TERMS_VERSION = "beta-v1-2026-06-02"
 
 st.set_page_config(page_title=APP_NAME, page_icon="🏗️", layout="wide")
 
@@ -285,6 +286,9 @@ def init_database() -> None:
                 sender_email TEXT DEFAULT '',
                 onboarding_seen INTEGER DEFAULT 0,
                 demo_loaded INTEGER DEFAULT 0,
+                terms_accepted INTEGER DEFAULT 0,
+                terms_accepted_at TEXT DEFAULT '',
+                terms_version TEXT DEFAULT '',
                 created_at TEXT NOT NULL
             )
             """,
@@ -447,6 +451,9 @@ def init_database() -> None:
                 sender_email TEXT DEFAULT '',
                 onboarding_seen INTEGER DEFAULT 0,
                 demo_loaded INTEGER DEFAULT 0,
+                terms_accepted INTEGER DEFAULT 0,
+                terms_accepted_at TEXT DEFAULT '',
+                terms_version TEXT DEFAULT '',
                 created_at TEXT NOT NULL
             );
 
@@ -599,6 +606,9 @@ def ensure_schema_migrations() -> None:
             con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS owner_key TEXT")
             con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS onboarding_seen INTEGER DEFAULT 0")
             con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS demo_loaded INTEGER DEFAULT 0")
+            con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS terms_accepted INTEGER DEFAULT 0")
+            con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS terms_accepted_at TEXT DEFAULT ''")
+            con.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS terms_version TEXT DEFAULT ''")
             con.execute("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS metadata_json TEXT DEFAULT '{}'")
             con.execute("UPDATE companies SET owner_key = 'local-demo' WHERE owner_key IS NULL OR owner_key = ''")
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_owner_key ON companies(owner_key)")
@@ -631,6 +641,12 @@ def ensure_schema_migrations() -> None:
         execute("ALTER TABLE companies ADD COLUMN onboarding_seen INTEGER DEFAULT 0")
     if "demo_loaded" not in company_columns:
         execute("ALTER TABLE companies ADD COLUMN demo_loaded INTEGER DEFAULT 0")
+    if "terms_accepted" not in company_columns:
+        execute("ALTER TABLE companies ADD COLUMN terms_accepted INTEGER DEFAULT 0")
+    if "terms_accepted_at" not in company_columns:
+        execute("ALTER TABLE companies ADD COLUMN terms_accepted_at TEXT DEFAULT ''")
+    if "terms_version" not in company_columns:
+        execute("ALTER TABLE companies ADD COLUMN terms_version TEXT DEFAULT ''")
     task_columns = {row.get("name") for row in fetch_all("PRAGMA table_info(tasks)")}
     if "metadata_json" not in task_columns:
         execute("ALTER TABLE tasks ADD COLUMN metadata_json TEXT DEFAULT '{}'")
@@ -936,6 +952,94 @@ def onboarding_has_been_seen(profile: dict[str, Any]) -> bool:
 
 def demo_has_been_loaded(profile: dict[str, Any]) -> bool:
     return str(profile.get("demo_loaded", 0)).lower() in {"1", "true", "yes"}
+
+
+
+def terms_have_been_accepted(profile: dict[str, Any]) -> bool:
+    accepted = str(profile.get("terms_accepted", 0)).lower() in {"1", "true", "yes"}
+    version_ok = normalize_optional_text(profile.get("terms_version")).strip() == TERMS_VERSION
+    return accepted and version_ok
+
+
+def accept_terms_for_company() -> None:
+    execute(
+        """
+        UPDATE companies
+        SET terms_accepted = 1,
+            terms_accepted_at = ?,
+            terms_version = ?
+        WHERE id = ?
+        """,
+        (now_string(), TERMS_VERSION, ACTIVE_COMPANY_ID),
+    )
+
+
+def render_terms_text() -> None:
+    st.markdown(
+        f"""
+### BuilderFlow Beta Terms and Agreement
+Version: `{TERMS_VERSION}`
+
+These beta terms are intended to protect BuilderFlow while the product is being tested. They are not a replacement for a lawyer-reviewed agreement.
+
+#### 1. Beta software
+BuilderFlow is currently beta software. Features may change, break, be removed, or be improved without notice.
+
+#### 2. Test data only during beta
+Until production security, billing, and account controls are fully finalized, users should avoid entering sensitive, confidential, regulated, or highly private client information.
+
+#### 3. No copying or cloning
+By using BuilderFlow, you agree not to copy, scrape, reverse engineer, clone, reproduce, redistribute, resell, or create a competing product from BuilderFlow's screens, workflows, code, prompts, designs, automations, or business logic.
+
+#### 4. Confidential access
+Beta access is private. You agree not to share screenshots, internal workflows, generated templates, source code, database structure, or private product details without written permission from BuilderFlow.
+
+#### 5. User content
+You are responsible for the information you enter into BuilderFlow. You confirm that you have the right to enter and process that information.
+
+#### 6. AI-generated content
+AI-generated proposals, follow-ups, client updates, and review/referral messages are drafts. Users are responsible for reviewing and editing generated content before sending it to clients.
+
+#### 7. No warranty
+BuilderFlow is provided as-is during beta testing. BuilderFlow does not guarantee uninterrupted service, error-free operation, increased sales, legal compliance, or specific business results.
+
+#### 8. Limitation of use
+You agree not to use BuilderFlow for unlawful, harmful, abusive, deceptive, or unauthorized purposes.
+
+#### 9. Feedback
+Feedback, suggestions, and product ideas shared during beta may be used by BuilderFlow to improve the product without compensation, unless a separate written agreement says otherwise.
+
+#### 10. Agreement required
+You must accept these terms before accessing your private BuilderFlow workspace.
+"""
+    )
+
+
+def require_terms_if_needed(profile: dict[str, Any]) -> None:
+    if not AUTH_REQUIRED:
+        return
+
+    if terms_have_been_accepted(profile):
+        return
+
+    st.title("BuilderFlow Beta Terms")
+    st.info("Before your private workspace opens, please review and accept the beta terms.")
+
+    with st.form("accept_builderflow_terms_form"):
+        render_terms_text()
+        agree = st.checkbox("I have read and agree to the BuilderFlow Beta Terms and Agreement.")
+        submitted = st.form_submit_button("Accept Terms and Open My Workspace")
+
+    if submitted:
+        if not agree:
+            st.error("You need to check the agreement box before continuing.")
+        else:
+            accept_terms_for_company()
+            clear_data_cache()
+            st.success("Terms accepted. Opening your BuilderFlow workspace...")
+            st.rerun()
+
+    st.stop()
 
 
 def get_company_signature(profile: dict[str, Any]) -> str:
@@ -2948,6 +3052,10 @@ ACTIVE_OWNER_KEY = active_user["owner_key"]
 ACTIVE_USER_LABEL = active_user["label"]
 ACTIVE_COMPANY_ID = ensure_company_for_owner(ACTIVE_OWNER_KEY, ACTIVE_USER_LABEL)
 
+# Require first-time beta users to accept terms before opening their workspace.
+profile = get_company_profile()
+require_terms_if_needed(profile)
+
 # Legacy JSON migration is only useful for the local testing build.
 if not USE_POSTGRES:
     migrate_legacy_json_if_needed()
@@ -3079,7 +3187,7 @@ with st.sidebar:
     st.markdown("<span style='color:#d4af37;font-size:13px;font-weight:700;'>NAVIGATION</span>", unsafe_allow_html=True)
     main_area = st.radio(
         "Main Menu",
-        ["Owner Dashboard", "How BuilderFlow Works", "Demo Mode", "Leads", "Projects", "Task Center", "Automations", "Growth Insights", "Client Update", "Referral / Review", "Feedback / Report Bug", "Saved Outputs", "Account"],
+        ["Owner Dashboard", "How BuilderFlow Works", "Demo Mode", "Leads", "Projects", "Task Center", "Automations", "Growth Insights", "Client Update", "Referral / Review", "Feedback / Report Bug", "Saved Outputs", "Terms / Agreement", "Account"],
         label_visibility="collapsed",
     )
     lead_page = None
@@ -3166,6 +3274,25 @@ if current_page == "Demo Mode":
         - Open Growth Insights and explain source/project-type performance.
         """
     )
+
+
+# ============================================================
+# Page: Terms / Agreement
+# ============================================================
+
+if current_page == "Terms / Agreement":
+    st.header("Terms / Agreement")
+    current_terms_profile = get_company_profile()
+
+    if AUTH_REQUIRED:
+        if terms_have_been_accepted(current_terms_profile):
+            st.success(f"Terms accepted on {current_terms_profile.get('terms_accepted_at', 'unknown date')} for version {current_terms_profile.get('terms_version', TERMS_VERSION)}.")
+        else:
+            st.warning("This workspace has not accepted the current beta terms yet.")
+    else:
+        st.info("Login is currently off, so terms acceptance is not being enforced. Turn login on before using this with outside beta testers.")
+
+    render_terms_text()
 
 
 # ============================================================
