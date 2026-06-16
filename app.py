@@ -1550,7 +1550,7 @@ def load_demo_data() -> tuple[bool, str]:
                 "email": "demo@builderflow.test",
                 "website": "https://builderflow-demo.test",
                 "service_area": "Edmonton, Sherwood Park, St. Albert, and surrounding areas",
-                "main_services": "Kitchen renovations, basement developments, bathroom renovations, exterior upgrades, and custom residential projects",
+                "main_services": "Residential and commercial contracting, subcontracting, repairs, service work, renovations, tenant improvements, and project coordination",
                 "booking_link": "https://calendly.com/builderflow-demo/consultation",
                 "review_link": "https://g.page/r/demo-builderflow/review",
                 "preferred_tone": "Professional",
@@ -1562,7 +1562,7 @@ def load_demo_data() -> tuple[bool, str]:
         demo_leads = [
             {
                 "client_name": "Demo Sarah Johnson",
-                "project_type": "Kitchen Renovation",
+                "project_type": "Residential Renovation",
                 "lead_source": "Google",
                 "client_email": "sarah.demo@example.com",
                 "client_phone": "780-555-0101",
@@ -1578,7 +1578,7 @@ def load_demo_data() -> tuple[bool, str]:
             },
             {
                 "client_name": "Demo Mike Thompson",
-                "project_type": "Basement Development",
+                "project_type": "Residential Renovation",
                 "lead_source": "Referral",
                 "client_email": "mike.demo@example.com",
                 "client_phone": "780-555-0102",
@@ -1594,7 +1594,7 @@ def load_demo_data() -> tuple[bool, str]:
             },
             {
                 "client_name": "Demo Lisa Brown",
-                "project_type": "Bathroom Renovation",
+                "project_type": "Residential Renovation",
                 "lead_source": "Website",
                 "client_email": "lisa.demo@example.com",
                 "client_phone": "780-555-0103",
@@ -1603,14 +1603,14 @@ def load_demo_data() -> tuple[bool, str]:
                 "budget": "$20,000 - $30,000",
                 "timeline": "ASAP if pricing works",
                 "estimated_value": "26000",
-                "notes": "Small bathroom renovation. Wants walk-in shower, tile replacement, vanity upgrade, better ventilation, and clearer pricing options.",
+                "notes": "Small residential renovation. Wants clearer scope, material options, timeline, and pricing options.",
                 "status": "Contacted",
                 "priority": "Medium",
                 "next_followup_offset": 1,
             },
             {
                 "client_name": "Demo Ahmed Patel",
-                "project_type": "Exterior Renovation",
+                "project_type": "Landscaping / Exterior",
                 "lead_source": "Instagram",
                 "client_email": "ahmed.demo@example.com",
                 "client_phone": "780-555-0104",
@@ -1635,14 +1635,14 @@ def load_demo_data() -> tuple[bool, str]:
                 "budget": "$120,000 - $160,000",
                 "timeline": "Researching options for fall",
                 "estimated_value": "145000",
-                "notes": "Large renovation opportunity. Client is comparing builders and wants phased pricing for main floor, bathrooms, and flooring.",
+                "notes": "Large residential/commercial contracting opportunity. Client is comparing quotes and wants clear scope, timeline, and phased pricing options.",
                 "status": "New",
                 "priority": "Medium",
                 "next_followup_offset": 3,
             },
             {
                 "client_name": "Demo Carlos Rivera",
-                "project_type": "Custom Home",
+                "project_type": "Residential New Build",
                 "lead_source": "Networking",
                 "client_email": "carlos.demo@example.com",
                 "client_phone": "780-555-0106",
@@ -1651,7 +1651,7 @@ def load_demo_data() -> tuple[bool, str]:
                 "budget": "$450,000 - $600,000",
                 "timeline": "Early planning",
                 "estimated_value": "525000",
-                "notes": "Early custom home inquiry. Not ready yet, but valuable long-term pipeline opportunity.",
+                "notes": "Early residential new build inquiry. Not ready yet, but valuable long-term pipeline opportunity.",
                 "status": "No Response",
                 "priority": "Low",
                 "next_followup_offset": 21,
@@ -1753,7 +1753,7 @@ def load_demo_data() -> tuple[bool, str]:
                 related_id=carlos_id,
                 category="long_term_nurture",
                 title="Check in with Demo Carlos later",
-                description="Long-term custom home inquiry. Keep warm without pushing too hard.",
+                description="Long-term residential new build inquiry. Keep warm without pushing too hard.",
                 due_date=future_date_string(21),
                 metadata={"demo": True},
             )
@@ -2375,7 +2375,7 @@ def create_proposal_pdf(client_name: str, project_type: str, proposal_text: str,
     body_style = ParagraphStyle("BuilderFlowBody", parent=styles["Normal"], fontSize=10, leading=14, spaceAfter=7)
     footer_style = ParagraphStyle("BuilderFlowFooter", parent=styles["Normal"], fontSize=9, leading=12, alignment=TA_CENTER, textColor=colors.grey)
 
-    company_name = profile.get("company_name", "") or "Builder / Remodeler"
+    company_name = profile.get("company_name", "") or "Contractor"
     contact_lines = [profile.get("contact_name", ""), profile.get("phone", ""), profile.get("email", ""), profile.get("website", "")]
     contact_block = "<br/>".join(clean_pdf_text(line) for line in contact_lines if line)
 
@@ -2457,7 +2457,7 @@ def followup_sequence_instruction(sequence_name: str) -> str:
 
 def build_follow_up_prompt(profile: dict[str, Any], client_name: str, project_type: str, budget: str, timeline: str, notes: str, sequence_name: str) -> str:
     return f"""
-You are writing for a professional residential remodeler/custom builder.
+You are writing for a professional general contractor or subcontractor.
 
 {company_context(profile)}
 
@@ -2484,7 +2484,7 @@ Rules:
 
 def build_proposal_prompt(profile: dict[str, Any], client_name: str, project_type: str, budget: str, timeline: str, notes: str) -> str:
     return f"""
-You are helping a remodeler/custom builder create a polished proposal draft.
+You are helping a general contractor or subcontractor create a polished proposal draft.
 
 {company_context(profile)}
 
@@ -2513,7 +2513,7 @@ Important:
 
 def build_client_update_prompt(profile: dict[str, Any], client_name: str, project_name: str, progress_notes: str, blockers: str, next_steps: str) -> str:
     return f"""
-You are writing a professional client progress update for a remodeler/custom builder.
+You are writing a professional client progress update for a general contractor or subcontractor.
 
 {company_context(profile)}
 Client name: {client_name}
@@ -2532,7 +2532,7 @@ Create a clear client update.
 
 def build_referral_prompt(profile: dict[str, Any], client_name: str, project_name: str, result_notes: str) -> str:
     return f"""
-You are writing a review/referral request for a remodeler/custom builder.
+You are writing a review/referral request for a general contractor or subcontractor.
 
 {company_context(profile)}
 Client name: {client_name}
@@ -2550,7 +2550,7 @@ Use the review link if available. Tone: thankful, professional, not awkward, not
 
 def build_owner_insight_prompt(profile: dict[str, Any], summary_text: str) -> str:
     return f"""
-You are an operations and sales advisor for a remodeler/custom builder.
+You are an operations and sales advisor for a general contractor or subcontractor.
 
 {company_context(profile)}
 
@@ -2568,7 +2568,7 @@ Include:
 
 def build_automation_task_prompt(profile: dict[str, Any], lead: dict[str, Any], task: dict[str, Any]) -> str:
     return f"""
-You are writing an automated proposal follow-up email for a remodeler/custom builder.
+You are writing an automated proposal follow-up email for a general contractor or subcontractor.
 
 {company_context(profile)}
 
@@ -3152,7 +3152,7 @@ st.markdown(
     <div class="bf-topbar">
         <div>
             <div class="bf-brand-title">BuilderFlow</div>
-            <div class="bf-brand-subtitle">Lead conversion, proposal automation, project tracking, and task control for remodelers and builders.</div>
+            <div class="bf-brand-subtitle">Lead conversion, proposal follow-up, project tracking, and task control for general contractors and subcontractors.</div>
         </div>
         <div class="bf-account-pill">👤 {account_name}</div>
     </div>
@@ -3456,7 +3456,29 @@ Won value: ${metrics['total_won_value']:,.0f}
 # Page: Lead Workspace
 # ============================================================
 
-PROJECT_TYPE_OPTIONS = ["Kitchen Renovation", "Bathroom Renovation", "Basement Development", "Whole-Home Renovation", "Addition", "Custom Home", "Exterior Renovation", "Other"]
+PROJECT_TYPE_OPTIONS = [
+    "Residential Renovation",
+    "Residential New Build",
+    "Residential Repair / Service",
+    "Residential Addition",
+    "Commercial Renovation",
+    "Commercial Tenant Improvement",
+    "Commercial New Build",
+    "General Contracting",
+    "Subcontracting Work",
+    "Concrete / Flatwork",
+    "Framing / Carpentry",
+    "Roofing",
+    "Electrical",
+    "Plumbing",
+    "HVAC",
+    "Painting",
+    "Flooring",
+    "Landscaping / Exterior",
+    "Maintenance / Service Call",
+    "Design-Build",
+    "Other",
+]
 LEAD_SOURCE_OPTIONS = ["Google", "Referral", "Website", "Facebook", "Instagram", "Repeat Client", "Marketplace", "Yard Sign", "Networking", "Other", "Unknown"]
 CONTACT_METHOD_OPTIONS = ["Email", "Phone", "Text", "No Preference"]
 STATUS_OPTIONS = ["New", "Contacted", "Follow-Up Sent", "Proposal Sent", "Won", "Lost", "No Response"]
@@ -4181,7 +4203,7 @@ Project type analytics:
 """
         if st.button("Generate Growth Insight"):
             prompt = f"""
-You are an analytics advisor for a remodeler/custom builder.
+You are an analytics advisor for a general contractor or subcontractor.
 
 {company_context(profile)}
 
